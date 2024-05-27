@@ -8,6 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <list>
+#include <chrono>
 #include <benchmark/benchmark.h>
 
 #define BUFSIZE_1MB 1048576
@@ -21,7 +22,7 @@ typedef struct chunk
 std::mutex mtx;
 std::atomic_bool eof = false;
 std::condition_variable cv;
-// double linked-list of chunks
+
 std::list<chunk> buffer;
 
 void copy(std::ifstream &inputFile)
@@ -68,10 +69,9 @@ void paste(std::ofstream &outputFile)
     }
 }
 
-void copyFiles(const char *source, const char *destination)
+void p4_copyFiles_thread(const char *source, const char *destination)
 {
     std::ifstream inputFile(source);
-
     if (!inputFile)
     {
         std::cout << std::strerror(errno) << " Error opening file " << source << "\n";
@@ -79,7 +79,6 @@ void copyFiles(const char *source, const char *destination)
     }
 
     std::ofstream outputFile(destination);
-
     if (!outputFile)
     {
         std::cout << std::strerror(errno) << " Error opening file " << destination << "\n";
@@ -93,13 +92,38 @@ void copyFiles(const char *source, const char *destination)
     pasteT.join();
 }
 
-static void BM_VectorSum(benchmark::State& state) {
-    for (auto _ : state) {
-        copyFiles("input1.txt", "output.txt");
-    }
+
+int main(int argc, char* argv[])
+{
+    if(argc < 3)
+        return 0;
+    
+    srand(static_cast<unsigned>(time(0)));
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    p4_copyFiles_thread(argv[1], argv[2]);
+    
+    auto end = std::chrono::high_resolution_clock::now();
+
+    auto duration = end - start;
+    std::cout << "Time taken " <<duration.count() << " ms" << std::endl;
+
+    return 0;
 }
 
-BENCHMARK(BM_VectorSum)->Range(1, 2);
 
-// Main function to run the benchmarks
-BENCHMARK_MAIN();
+
+
+// static void BM_VectorSum(benchmark::State& state) {
+//     std::string ss("hel");
+//     std::string ss1("hel");
+//     for (auto _ : state) {
+//         p4_copyFiles_thread("input1.txt", "output.txt");
+//     }
+// }
+
+// // Register the benchmark
+// BENCHMARK(BM_VectorSum);
+
+// // Main function to run the benchmarks
+// BENCHMARK_MAIN();
