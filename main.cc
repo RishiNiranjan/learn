@@ -9,38 +9,46 @@
 #include <condition_variable>
 #include <list>
 #include <chrono>
-#include <benchmark/benchmark.h>
+#include <vector>
 
 #define BUFSIZE_1MB 1048576
 
 typedef struct chunk
 {
-    std::array<char, BUFSIZE_1MB> chk;
+    std::vector<char> buf;
     unsigned int size = 0;    
-} chunk;
+} Chunk;
 
 std::mutex mtx;
 std::atomic_bool eof = false;
 std::condition_variable cv;
 
-std::list<chunk> buffer;
+std::list<Chunk> ll_Chunks;
 
 void copy(std::ifstream &inputFile)
 {
-    chunk chk;
+    Chunk chunk;
 
     while (!eof)
     {
-        inputFile.read(chk.chk.data(), BUFSIZE_1MB);
-        chk.size = inputFile.gcount();
+        chunk.buf.reserve(BUFSIZE_1MB);
+
+        inputFile.read(chunk.buf.data(), BUFSIZE_1MB);
+        chunk.size = inputFile.gcount();
+
+        if(inputFile.bad())
+        {
+            std::cerr<<"Copy failed\n";
+            return;
+        }
 
         {
             std::scoped_lock<std::mutex> mm(mtx);
-            buffer.push_back(chk);
+            ll_Chunks.push_back(std::move(chunk));
+            
+            if (inputFile.eof())
+                eof = true;
         }
-
-        if (inputFile.eof())
-            eof = true;
 
         cv.notify_one();
     }
@@ -48,18 +56,23 @@ void copy(std::ifstream &inputFile)
 
 void paste(std::ofstream &outputFile)
 {
-    int chunkIndex = 0;
-
     while (true)
     {
         std::unique_lock<std::mutex> mm(mtx);
 
-        while (buffer.size())
+        while (ll_Chunks.size())
         {
             mm.unlock();
-            outputFile.write(buffer.front().chk.data(), buffer.front().size);
+                outputFile.write(ll_Chunks.front().buf.data(), ll_Chunks.front().size);
+                
+                if(outputFile.bad())
+                {
+                    std::cerr<<"Writing to file failed\n";
+                    return;
+                }
             mm.lock();
-            buffer.pop_front();
+            
+            ll_Chunks.pop_front();
         }
 
         if (eof)
@@ -74,14 +87,14 @@ void p4_copyFiles_thread(const char *source, const char *destination)
     std::ifstream inputFile(source);
     if (!inputFile)
     {
-        std::cout << std::strerror(errno) << " Error opening file " << source << "\n";
+        std::cerr << std::strerror(errno) << " Error opening file " << source << "\n";
         return;
     }
 
     std::ofstream outputFile(destination);
     if (!outputFile)
     {
-        std::cout << std::strerror(errno) << " Error opening file " << destination << "\n";
+        std::cerr << std::strerror(errno) << " Error opening file " << destination << "\n";
         return;
     }
 
@@ -104,7 +117,6 @@ int main(int argc, char* argv[])
     p4_copyFiles_thread(argv[1], argv[2]);
     
     auto end = std::chrono::high_resolution_clock::now();
-
     auto duration = end - start;
     std::cout << "Time taken " <<duration.count() << " ms" << std::endl;
 
