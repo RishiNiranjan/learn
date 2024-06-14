@@ -4,53 +4,64 @@
 #include <thread>
 #include <cerrno>
 #include <array>
-#include <atomic>
 #include <mutex>
 #include <condition_variable>
-#include <list>
 #include <chrono>
-#include <vector>
 
 #define BUFSIZE_1MB 1048576
+#define NOOFCHUNKS 10
 
 typedef struct chunk
 {
-    std::vector<char> buf;
-    unsigned int size = 0;    
+    std::array<char, BUFSIZE_1MB> buf;
+    unsigned int size = 0;
+    bool eof = 0;
 } Chunk;
 
+bool eof = false;
 std::mutex mtx;
-std::atomic_bool eof = false;
 std::condition_variable cv;
 
-std::list<Chunk> ll_Chunks;
+std::array<Chunk, NOOFCHUNKS> _buffer;
+int front = 0, rear = 1;
+
+bool increment(int& x, int y)
+{
+    if((x+1)%NOOFCHUNKS == y)
+        return false;
+
+    x = (x+1)%NOOFCHUNKS;
+    return true;
+}
 
 void copy(std::ifstream &inputFile)
 {
-    Chunk chunk;
-
-    while (!eof)
+    while (true)
     {
-        chunk.buf.reserve(BUFSIZE_1MB);
-
-        inputFile.read(chunk.buf.data(), BUFSIZE_1MB);
-        chunk.size = inputFile.gcount();
-
-        if(inputFile.bad())
-        {
-            std::cerr<<"Copy failed\n";
-            return;
-        }
+        bool status = false;
 
         {
-            std::scoped_lock<std::mutex> mm(mtx);
-            ll_Chunks.push_back(std::move(chunk));
-            
-            if (inputFile.eof())
+            std::unique_lock<std::mutex> mm(mtx);
+            if(inputFile.eof())
+            {
                 eof = true;
+                break;
+            }
+            status = cv.wait_for(mm, std::chrono::seconds(2), [&](){ return increment(rear, front);}); 
         }
 
-        cv.notify_one();
+        if(status)
+        {
+            inputFile.read(_buffer[rear].buf.data(), BUFSIZE_1MB);
+            _buffer[rear].size = inputFile.gcount();
+            _buffer[rear].eof = inputFile.eof();
+
+            if(inputFile.bad())
+            {
+                std::cerr<<"Copy failed\n";
+                return;
+            }
+        }
     }
 }
 
@@ -58,27 +69,30 @@ void paste(std::ofstream &outputFile)
 {
     while (true)
     {
-        std::unique_lock<std::mutex> mm(mtx);
-
-        while (ll_Chunks.size())
+        bool status = true;
+        
         {
-            mm.unlock();
-                outputFile.write(ll_Chunks.front().buf.data(), ll_Chunks.front().size);
-                
-                if(outputFile.bad())
-                {
-                    std::cerr<<"Writing to file failed\n";
-                    return;
-                }
-            mm.lock();
-            
-            ll_Chunks.pop_front();
+            std::unique_lock<std::mutex> mm(mtx);
+        
+            if(eof)
+                front = (front+1)%NOOFCHUNKS;
+            else
+                status = cv.wait_for(mm, std::chrono::seconds(2), [&](){return increment(front, rear);});
         }
+        
+        if(status) 
+        {
+            outputFile.write(_buffer[front].buf.data(), _buffer[front].size);
+        
+            if(outputFile.bad())
+            {
+                std::cerr<<"Writing to file failed\n";
+                return;
+            }
 
-        if (eof)
-            break;
-
-        cv.wait(mm);
+            if(_buffer[front].eof)
+                break;
+        }
     }
 }
 
@@ -126,16 +140,5 @@ int main(int argc, char* argv[])
 
 
 
-// static void BM_VectorSum(benchmark::State& state) {
-//     std::string ss("hel");
-//     std::string ss1("hel");
-//     for (auto _ : state) {
-//         p4_copyFiles_thread("input1.txt", "output.txt");
-//     }
-// }
 
-// // Register the benchmark
-// BENCHMARK(BM_VectorSum);
 
-// // Main function to run the benchmarks
-// BENCHMARK_MAIN();
